@@ -1,4 +1,6 @@
 # Env files
 .env
 .vscode/
-# No extra ignore rules
+
+# Other 
+main.db
