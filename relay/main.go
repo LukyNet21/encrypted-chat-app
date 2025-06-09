@@ -7,11 +7,17 @@ import (
 )
 
 func main() {
-	_ = connect()
+	db := connect()
 	fmt.Println("Connected to DB!")
 
-	http.HandleFunc("/", handlers.Home)
+	handler := handlers.NewHandler(db)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", handler.HandleHome)
+	mux.HandleFunc("/register", handler.HandleRegister)
+
+	corsHandler := handlers.CORSMiddleware(mux)
 
 	fmt.Println("Starting http server on :8080!")
-	http.ListenAndServe(":8080", nil)
+	http.ListenAndServe(":8080", corsHandler)
 }
