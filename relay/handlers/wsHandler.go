@@ -1,0 +1,140 @@
+package handlers
+
+import (
+	"encrypted-chat-relay/models"
+	"fmt"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/ProtonMail/gopenpgp/v3/crypto"
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
+	"gorm.io/gorm"
+)
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
+
+type Client struct {
+	UserID  uuid.UUID
+	Conn    *websocket.Conn
+	Handler *wsHandler
+}
+
+type wsHandler struct {
+	db      *gorm.DB
+	clients map[uuid.UUID]*Client
+	mu      sync.RWMutex
+}
+
+func NewWSHandler(db *gorm.DB) *wsHandler {
+	return &wsHandler{
+		db:      db,
+		clients: make(map[uuid.UUID]*Client),
+	}
+}
+
+func (h *wsHandler) HandleWS(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Printf("Error upgrading connection: %v\n", err)
+		return
+	}
+	defer conn.Close()
+
+	// Create a new client
+	client := &Client{
+		Conn:    conn,
+		Handler: h,
+	}
+
+	defer func() {
+		h.removeClient(client)
+		conn.Close()
+	}()
+
+	fmt.Printf("New connection from: %s\n", conn.RemoteAddr().String())
+
+	if !h.authenticate(client) {
+
+	}
+	time.Sleep(time.Millisecond)
+	conn.WriteMessage(websocket.TextMessage, []byte("hi from the server"))
+}
+
+func (h *wsHandler) authenticate(client *Client) bool {
+	pgp := crypto.PGP()
+	var username string
+	_, msg, err := client.Conn.ReadMessage()
+	if err != nil {
+		fmt.Printf("Error reading authentication message: %v\n", err)
+		client.Conn.Close()
+		return false
+	}
+	username = string(msg)
+
+	var user models.User
+	if h.db.First(&user, "user_name = ?", username).Error != nil {
+		client.Conn.WriteMessage(websocket.TextMessage, []byte("user not found"))
+		client.Conn.Close()
+		return false
+	}
+
+	chellange := uuid.NewString()
+
+	if client.Conn.WriteMessage(websocket.TextMessage, []byte(chellange)) != nil {
+		client.Conn.Close()
+		return false
+	}
+
+	_, msg, err = client.Conn.ReadMessage()
+	if err != nil {
+		client.Conn.Close()
+		return false
+	}
+	publicKey, err := crypto.NewKeyFromArmored(user.PublicKey)
+	if err != nil {
+		client.Conn.Close()
+		return false
+	}
+	verifier, err := pgp.Verify().VerificationKey(publicKey).New()
+	if err != nil {
+		client.Conn.Close()
+		return false
+	}
+	verifyResult, err := verifier.VerifyCleartext(msg)
+	if err != nil {
+		client.Conn.Close()
+		return false
+	}
+
+	if sigErr := verifyResult.SignatureError(); sigErr != nil {
+		client.Conn.WriteMessage(websocket.TextMessage, []byte("invalid signature"))
+		client.Conn.Close()
+		return false
+	}
+
+	client.UserID = user.ID
+	h.mu.Lock()
+	h.clients[client.UserID] = client
+	h.mu.Unlock()
+
+	if err := client.Conn.WriteMessage(websocket.TextMessage, []byte("successfully signed in")); err != nil {
+		client.Conn.Close()
+		return false
+	}
+
+	return true
+}
+
+func (h *wsHandler) removeClient(client *Client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.clients, client.UserID)
+}

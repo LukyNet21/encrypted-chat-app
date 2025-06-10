@@ -10,11 +10,13 @@ func main() {
 	db := connect()
 	fmt.Println("Connected to DB!")
 
-	handler := handlers.NewHandler(db)
+	httpHandler := handlers.NewHandler(db)
+	wsHandler := handlers.NewWSHandler(db)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", handler.HandleHome)
-	mux.HandleFunc("/register", handler.HandleRegister)
+	mux.HandleFunc("/", httpHandler.HandleHome)
+	mux.HandleFunc("/register", httpHandler.HandleRegister)
+	mux.HandleFunc("/ws", wsHandler.HandleWS)
 
 	corsHandler := handlers.CORSMiddleware(mux)
 

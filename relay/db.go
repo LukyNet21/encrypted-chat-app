@@ -13,7 +13,7 @@ func connect() *gorm.DB {
 		panic("failed to connect database")
 	}
 
-	db.AutoMigrate(&models.User{})
+	db.AutoMigrate(&models.User{}, &models.Message{})
 
 	return db
 }
