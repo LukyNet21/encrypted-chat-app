@@ -21,10 +21,16 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+type wsMessage struct {
+	Content string
+	SentAt  time.Time
+}
+
 type Client struct {
 	UserID  uuid.UUID
 	Conn    *websocket.Conn
 	Handler *wsHandler
+	Send    chan wsMessage
 }
 
 type wsHandler struct {
@@ -46,26 +52,30 @@ func (h *wsHandler) HandleWS(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("Error upgrading connection: %v\n", err)
 		return
 	}
-	defer conn.Close()
 
 	// Create a new client
 	client := &Client{
 		Conn:    conn,
 		Handler: h,
+		Send:    make(chan wsMessage, 256),
 	}
 
 	defer func() {
 		h.removeClient(client)
 		conn.Close()
+		close(client.Send)
 	}()
 
 	fmt.Printf("New connection from: %s\n", conn.RemoteAddr().String())
 
 	if !h.authenticate(client) {
-
+		return
 	}
+
 	time.Sleep(time.Millisecond)
 	conn.WriteMessage(websocket.TextMessage, []byte("hi from the server"))
+	go h.readLoop(client)
+	go h.writeLoop(client)
 }
 
 func (h *wsHandler) authenticate(client *Client) bool {
@@ -131,6 +141,38 @@ func (h *wsHandler) authenticate(client *Client) bool {
 	}
 
 	return true
+}
+
+func (h *wsHandler) readLoop(client *Client) {
+	defer client.Conn.Close()
+
+	for {
+		message, _, err := client.Conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		fmt.Println(message)
+	}
+}
+
+func (h *wsHandler) writeLoop(client *Client) {
+	defer func() {
+		close(client.Send)
+		client.Conn.Close()
+	}()
+
+	for {
+		message, ok := <-client.Send
+		if !ok {
+			return
+		}
+
+		err := client.Conn.WriteJSON(message)
+		if err != nil {
+			fmt.Printf("Error writing to websocket: %v\n", err)
+			return
+		}
+	}
 }
 
 func (h *wsHandler) removeClient(client *Client) {
